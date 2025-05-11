@@ -8,7 +8,8 @@ from infrastructure.aws_setup import (
     create_iam_role,
     create_redshift_cluster,
     check_cluster_status,
-    delete_redshift_cluster
+    delete_redshift_cluster,
+    wait_for_cluster_available
 )
 
 from sql import create_tables
@@ -32,10 +33,15 @@ def run_pipeline():
     print("\n🚀 Running Full Pipeline")
     create_iam_role()
     create_redshift_cluster()
-    check_cluster_status()
-    create_tables.main()
-    etl.main()
-    print("✅ Full pipeline execution complete")
+
+    if wait_for_cluster_available():
+        create_tables.main()
+        etl.main()
+        print("✅ Full pipeline execution complete")
+
+    else:
+        print("❌ Pipeline aborted: Redshift cluster not available.")
+
 
 def print_aws_identity():
     import boto3
