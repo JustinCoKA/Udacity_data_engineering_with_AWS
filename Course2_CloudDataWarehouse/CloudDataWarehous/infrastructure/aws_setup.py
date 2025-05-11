@@ -2,6 +2,7 @@ import boto3
 import json
 import configparser
 import os
+import time
 from botocore.exceptions import ClientError
 
 config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'dwh.cfg')
@@ -119,8 +120,51 @@ def delete_redshift_cluster():
     except ClientError as e:
         print("Error deleting cluster status:", e.response['Error']['Message'])
 
+def wait_for_cluster_available(poll_interval=30, timeout_seconds=600):
+    """
+    Wait until the Redshift cluster becomes 'available'.
+    Polls every `poll_interval` seconds up to `timeout_seconds`.
+    """
+    redshift = boto3.client('redshift', region_name=config.get('CLUSTER', 'REGION'))
+    cluster_id = config.get('CLUSTER', 'CLUSTER_IDENTIFIER')
+    elapsed = 0
+
+    print(f"🔄 Waiting for Redshift cluster '{cluster_id}' to become available...")
+
+    while elapsed < timeout_seconds:
+        try:
+            response = redshift.describe_clusters(ClusterIdentifier=cluster_id)
+            cluster = response['Clusters'][0]
+            status = cluster['ClusterStatus']
+            print(f"⏳ Status: {status} (checked at {elapsed} seconds)")
+
+            if status == 'available':
+                endpoint = cluster['Endpoint']['Address']
+                role_arn = cluster['IamRoles'][0]['IamRoleArn']
+                print(f"✅ Cluster is available!")
+                print(f"🔗 Endpoint: {endpoint}")
+                print(f"🛡️ IAM Role ARN: {role_arn}")
+
+                config.set('CLUSTER', 'HOST', endpoint)
+                config.set('IAM_ROLE', 'ARN', role_arn)
+                with open(config_path, 'w') as cfg_file:
+                    config.write(cfg_file)
+
+                return True
+
+        except ClientError as e:
+            print("⚠️ Error while checking status:", e.response['Error']['Message'])
+            break
+
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+    print("❌ Timeout: Redshift cluster did not become available in time.")
+    return False
+
 if __name__ == '__main__':
     create_iam_role()
     create_redshift_cluster()
     check_cluster_status()
     delete_redshift_cluster()
+    wait_for_cluster_available()
