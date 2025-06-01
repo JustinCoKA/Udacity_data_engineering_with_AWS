@@ -1,15 +1,22 @@
 import configparser
 import os
 
-# CONFIG
 config = configparser.ConfigParser()
-config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'dwh.cfg')
+config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config', 'dwh.cfg')
 config.read(config_path)
 
 # DROP TABLES
+staging_events_table_drop = "DROP TABLE IF EXISTS staging_events;"
+staging_songs_table_drop = "DROP TABLE IF EXISTS staging_songs;"
+songplay_table_drop = "DROP TABLE IF EXISTS songplays;"
+user_table_drop = "DROP TABLE IF EXISTS users;"
+song_table_drop = "DROP TABLE IF EXISTS songs;"
+artist_table_drop = "DROP TABLE IF EXISTS artists;"
+time_table_drop = "DROP TABLE IF EXISTS time;"
 
 # Saving log_data temporary
 staging_events_table_drop = "DROP TABLE IF EXISTS staging_events"
+
 # Saving song_data temporary
 staging_songs_table_drop = "DROP TABLE IF EXISTS staging_songs"
 songplay_table_drop = "DROP TABLE IF EXISTS songplays"
@@ -22,7 +29,7 @@ time_table_drop = "DROP TABLE IF EXISTS time"
 
 staging_events_table_create= ("""
 CREATE TABLE IF NOT EXISTS staging_events (
-    artist TEXS,
+    artist TEXT,
     auth TEXT,
     firstName TEXT,
     gender TEXT,
@@ -74,7 +81,7 @@ CREATE TABLE IF NOT EXISTS songplays (
 
 user_table_create = ("""
 CREATE TABLE IF NOT EXISTS users (
-    user_id INT IDENTITY(0,1) PRIMARY KEY,
+    user_id INT PRIMARY KEY SORTKEY,
     first_name TEXT,
     last_name TEXT,
     gender TEXT,
@@ -115,37 +122,35 @@ CREATE TABLE IF NOT EXISTS time (
 """)
 
 # STAGING TABLES
+LOG_DATA_PATH = config.get('S3', 'LOG_DATA', fallback='s3_log_data_placeholder')
+IAM_ROLE_ARN_VAL = config.get('IAM_ROLE', 'ARN', fallback='iam_role_arn_placeholder')
+LOG_JSONPATH_VAL = config.get('S3', 'LOG_JSONPATH', fallback='s3_log_jsonpath_placeholder')
+CLUSTER_REGION_VAL = config.get('CLUSTER', 'REGION', fallback='cluster_region_placeholder')
+SONG_DATA_PATH = config.get('S3', 'SONG_DATA', fallback='s3_song_data_placeholder')
 
 staging_events_copy = ("""
     COPY staging_events
-    FROM '{}'
-    CREDENTIALS 'aws_iam_role={}'
-    JSON '{}'
-    REGION '{}'
+    FROM '{s3_log_data}'
+    CREDENTIALS 'aws_iam_role={iam_role_arn}'
+    JSON '{s3_log_jsonpath}'
+    REGION '{s3_data_region}'
     TIMEFORMAT as 'epochmillisecs'
     TRUNCATECOLUMNS
     BLANKSASNULL
     EMPTYASNULL;
-""").format(
-    config.get('S3', 'LOG_DATA'),
-    config.get('IAM_ROLE', 'ARN'),
-    config.get('S3', 'LOG_JSONPATH'),
-    config.get('CLUSTER', 'REGION'))
+""")
+
 
 staging_songs_copy = ("""
-    COPY staging_song
-    FROM '{}'
-    CREDENTIALS 'aws_iam_role={}'
+    COPY staging_songs
+    FROM '{s3_song_data}'
+    CREDENTIALS 'aws_iam_role={iam_role_arn}'
     JSON 'auto'
-    REGION '{}'
+    REGION '{s3_data_region}'
     TRUNCATECOLUMNS
     BLANKSASNULL
     EMPTYASNULL;
-""").format(
-    config.get('S3', 'SONG_DATA'),
-    config.get('IAM_ROLE', 'ARN'),
-    config.get('CLUSTER', 'REGION')
-)
+""")
 
 # FINAL TABLES
 
@@ -155,14 +160,14 @@ songplay_table_insert = ("""
         TIMESTAMP 'epoch' + se.ts / 1000 * INTERVAL '1 second' AS start_time,
         se.userId,
         se.level,
-        ss.songId,
-        ss.artistId,
+        ss.song_id,
         ss.artist_id,
         se.sessionId,
         se.location,
         se.userAgent
     FROM staging_events AS se
-    JOIN staging_songs AS ss ON se.song = ss.title AND se.artist = ss.artist_name WHERE se.page = 'NextSong';
+    JOIN staging_songs AS ss ON (se.song = ss.title AND se.artist = ss.artist_name AND se.length = ss.duration)
+    WHERE se.page = 'NextSong'
 """)
 
 user_table_insert = ("""
@@ -174,7 +179,7 @@ user_table_insert = ("""
         gender,
         level
     FROM staging_events 
-    WHERE page = 'NextSong' AND userID is NOT NULL; 
+    WHERE page = 'NextSong' AND userId is NOT NULL; 
 """)
 
 song_table_insert = ("""
@@ -185,7 +190,7 @@ song_table_insert = ("""
         artist_id,
         year,
         duration
-    FROM staging_song;
+    FROM staging_songs;
 """)
 
 artist_table_insert = ("""
@@ -196,24 +201,24 @@ artist_table_insert = ("""
         artist_location,
         artist_latitude,
         artist_longitude
-    FROM staging_song;
+    FROM staging_songs;
 """)
 
 time_table_insert = ("""
     INSERT INTO time (start_time, hour, day, week, month, year, weekday)
     SELECT DISTINCT 
-        start_time,
-        EXTRACT(hour FROM start_time),
-        EXTRACT(day FROM start_time),
-        EXTRACT(week FROM start_time),
-        EXTRACT(month FROM start_time),
-        EXTRACT(year FROM start_time),
-        EXTRACT(weekday FROM start_time)
+        ts_timestamp AS start_time,
+        EXTRACT(hour FROM ts_timestamp),
+        EXTRACT(day FROM ts_timestamp),
+        EXTRACT(week FROM ts_timestamp),
+        EXTRACT(month FROM ts_timestamp),
+        EXTRACT(year FROM ts_timestamp),
+        EXTRACT(weekday FROM ts_timestamp)
     FROM (
-        SELECT TIMESTAMP 'epoch' + se.ts / 1000 * INTERVAL '1 second' AS start_time,
-        FROM staging_events
-        WHERE page = 'NextSong'
-        )
+        SELECT (TIMESTAMP 'epoch' + se.ts/1000 * INTERVAL '1 second') AS ts_timestamp
+        FROM staging_events se
+        WHERE se.page = 'NextSong' AND se.ts is NOT NULL
+        ) AS subquery_for_time;
 """)
 
 # QUERY LISTS
