@@ -1,7 +1,6 @@
 import configparser
 import psycopg2
 import os
-# importlib is no longer needed
 
 from sql.sql_queries import copy_table_queries, insert_table_queries # Import modified template list
 
